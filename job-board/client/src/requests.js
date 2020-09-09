@@ -1,83 +1,87 @@
 import { getAccessToken, isLoggedIn } from "./auth";
+import {
+  ApolloClient,
+  HttpLink,
+  InMemoryCache,
+  ApolloLink,
+} from "apollo-boost";
+import gql from "graphql-tag";
 
 const ENDPOINT_URL = "http://localhost:9000/graphql";
 
-async function graphqlRequest(query, variables = {}) {
-  const request = {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ query, variables }),
-  };
-
+const authLink = new ApolloLink((operation, forward) => {
   if (isLoggedIn()) {
-    request.headers["authorization"] = `Bearer ${getAccessToken()}`;
+    operation.setContext({
+      headers: {
+        Authorization: `Bearer ${getAccessToken()}`,
+      },
+    });
   }
+  return forward(operation);
+});
 
-  const response = await fetch(ENDPOINT_URL, request);
+const client = new ApolloClient({
+  link: ApolloLink.from([authLink, new HttpLink({ uri: ENDPOINT_URL })]),
+  cache: new InMemoryCache(),
+});
 
-  const responseBody = await response.json();
+// async function graphqlRequest(query, variables = {}) {
+//   const request = {
+//     method: "POST",
+//     headers: { "content-type": "application/json" },
+//     body: JSON.stringify({ query, variables }),
+//   };
 
-  if (responseBody.errors) {
-    const message = responseBody.errors
-      .map((error) => error.message)
-      .join("\n");
-    throw new Error(`GraphQL Error: ${message}`);
+//   if (isLoggedIn()) {
+//     request.headers["authorization"] = `Bearer ${getAccessToken()}`;
+//   }
+
+//   const response = await fetch(ENDPOINT_URL, request);
+
+//   const responseBody = await response.json();
+
+//   if (responseBody.errors) {
+//     const message = responseBody.errors
+//       .map((error) => error.message)
+//       .join("\n");
+//     throw new Error(`GraphQL Error: ${message}`);
+//   }
+
+//   return responseBody.data;
+// }
+
+const jobDetailFragment = gql`
+  fragment JobDetail on Job {
+    id
+    title
+    company {
+      id
+      name
+    }
+    description
   }
+`;
 
-  return responseBody.data;
-}
-
-export async function createJob(input) {
-  const mutation = `mutation CreateJob($input: CreateJobInput!) {
-    job: createJob(input: $input) {
-      id
-      title
-      company {
-        id
-        name
-      }
-    }
-  }`;
-  const { job } = await graphqlRequest(mutation, { input });
-  console.log(job);
-  return job;
-}
-
-export async function loadJobs() {
-  const query = `query JobsQuery {
-    jobs {
-      id
-      title
-      company {
-        id
-        name
-      }
-    }
-  }`;
-  const { jobs } = await graphqlRequest(query);
-
-  return jobs;
-}
-
-export async function loadJob(id) {
-  const query = `query JobQuery($id: ID!) {
+const jobQuery = gql`
+  query JobQuery($id: ID!) {
     job(id: $id) {
-      id
-      title
-      company {
-        id
-        name
-      }
-      description
+      ...JobDetail
     }
-  }`;
-  const { job } = await graphqlRequest(query, { id });
+  }
+  ${jobDetailFragment}
+`;
 
-  return job;
-}
+const jobsQuery = gql`
+  query JobsQuery {
+    jobs {
+      ...JobDetail
+    }
+  }
+  ${jobDetailFragment}
+`;
 
-export async function loadCompany(id) {
-  const query = `query CompanyQuery($id: ID!) {
+const companyQuery = gql`
+  query CompanyQuery($id: ID!) {
     company(id: $id) {
       id
       name
@@ -87,8 +91,56 @@ export async function loadCompany(id) {
         title
       }
     }
-  }`;
-  const { company } = await graphqlRequest(query, { id });
+  }
+`;
+
+const createJobMutation = gql`
+  mutation CreateJob($input: CreateJobInput!) {
+    job: createJob(input: $input) {
+      ...JobDetail
+    }
+  }
+  ${jobDetailFragment}
+`;
+
+export async function createJob(input) {
+  const {
+    data: { job },
+  } = await client.mutate({
+    mutation: createJobMutation,
+    variables: { input },
+    update: (cache, { data }) => {
+      cache.writeQuery({
+        query: jobQuery,
+        variables: { id: data.job.id },
+        data,
+      });
+    },
+  });
+
+  return job;
+}
+
+export async function loadJobs() {
+  const {
+    data: { jobs },
+  } = await client.query({ query: jobsQuery, fetchPolicy: "no-cache" });
+
+  return jobs;
+}
+
+export async function loadJob(id) {
+  const {
+    data: { job },
+  } = await client.query({ query: jobQuery, variables: { id } });
+
+  return job;
+}
+
+export async function loadCompany(id) {
+  const {
+    data: { company },
+  } = await client.query({ query: companyQuery, variables: { id } });
 
   return company;
 }
